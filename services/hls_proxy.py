@@ -89,7 +89,8 @@ if MPD_MODE == "legacy":
     TurboVidPlayExtractor,
     LiveTVExtractor,
     F16PxExtractor,
-) = None, None, None, None, None
+    CityExtractor,
+) = None, None, None, None, None, None
 
 logger = logging.getLogger(__name__)
 
@@ -315,6 +316,13 @@ try:
 except ImportError:
     logger.warning("⚠️ DLStreamsExtractor module not found.")
 
+try:
+    from extractors.city import CityExtractor
+
+    logger.info("✅ CityExtractor module loaded.")
+except ImportError:
+    logger.warning("⚠️ CityExtractor module not found.")
+
 
 class HLSProxy:
     """Proxy HLS per gestire stream Vavoo, DLHD, HLS generici e playlist builder con supporto AES-128"""
@@ -476,7 +484,11 @@ class HLSProxy:
         - proxy_url: The proxy URL being used, or None for direct connection
         """
         proxy = get_proxy_for_url(url, TRANSPORT_ROUTES, GLOBAL_PROXIES)
-        prefer_default_family = "ai.the-sunmoon.site/key/" in url
+        prefer_default_family = (
+            "ai.the-sunmoon.site/key/" in url
+            or "cccdn.net" in url 
+            or "city.cc" in url
+        )
 
         if proxy:
             # Check if we have a cached session for this proxy
@@ -493,13 +505,15 @@ class HLSProxy:
             logger.info(f"🌍 Creating proxy session: {proxy}")
             try:
                 # Unlimited connections for maximum speed
-                connector = ProxyConnector.from_url(
-                    proxy,
-                    limit=0,  # Unlimited connections
-                    limit_per_host=0,  # Unlimited per host
-                    keepalive_timeout=60,  # Keep connections alive longer
-                    family=socket.AF_INET,  # Force IPv4
-                )
+                connector_kwargs = {
+                    "limit": 0,
+                    "limit_per_host": 0,
+                    "keepalive_timeout": 60,
+                }
+                if not prefer_default_family:
+                    connector_kwargs["family"] = socket.AF_INET
+
+                connector = ProxyConnector.from_url(proxy, **connector_kwargs)
                 timeout = ClientTimeout(total=30)
                 session = ClientSession(timeout=timeout, connector=connector)
                 self.proxy_sessions[proxy] = session  # Cache the session
@@ -695,6 +709,12 @@ class HLSProxy:
                 elif host == "f16px":
                     if key not in self.extractors:
                         self.extractors[key] = F16PxExtractor(
+                            request_headers, proxies=GLOBAL_PROXIES
+                        )
+                    return self.extractors[key]
+                elif host == "city":
+                    if key not in self.extractors:
+                        self.extractors[key] = CityExtractor(
                             request_headers, proxies=GLOBAL_PROXIES
                         )
                     return self.extractors[key]
@@ -997,6 +1017,15 @@ class HLSProxy:
                 proxy_list = [proxy] if proxy else []
                 if key not in self.extractors:
                     self.extractors[key] = F16PxExtractor(
+                        request_headers, proxies=proxy_list
+                    )
+                return self.extractors[key]
+            elif "city.cc" in url.lower():
+                key = "city"
+                proxy = get_proxy_for_url("city.cc", TRANSPORT_ROUTES, GLOBAL_PROXIES)
+                proxy_list = [proxy] if proxy else []
+                if key not in self.extractors:
+                    self.extractors[key] = CityExtractor(
                         request_headers, proxies=proxy_list
                     )
                 return self.extractors[key]
@@ -1534,6 +1563,7 @@ class HLSProxy:
                         "turbovidplay",
                         "livetv",
                         "f16px",
+                        "city",
                     ],
                     "examples": [
                         f"{request.scheme}://{request.host}/extractor/video?url=https://vavoo.to/channel/123",
@@ -2999,8 +3029,6 @@ class HLSProxy:
                 "-copyts",  # Preserve timestamps to prevent freezing/gap issues
                 "-bsf:v",
                 "h264_mp4toannexb",  # Ensure video is Annex B (MPEG-TS requirement)
-                "-bsf:a",
-                "aac_adtstoasc",  # Ensure audio is ADTS (MPEG-TS requirement)
                 "-f",
                 "mpegts",
                 "pipe:1",
