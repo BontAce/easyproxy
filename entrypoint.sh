@@ -37,7 +37,7 @@ if [ "$ENABLE_WARP" = "true" ]; then
         # Set license key if provided
         if [ -n "$WARP_LICENSE_KEY" ]; then
             echo "🔑 Setting WARP license key..."
-            warp-cli --accept-tos registration set-key "$WARP_LICENSE_KEY"
+            warp-cli --accept-tos set-license "$WARP_LICENSE_KEY"
         fi
         
         # Connect
@@ -52,8 +52,8 @@ if [ "$ENABLE_WARP" = "true" ]; then
          warp-cli --accept-tos add-excluded-domain cccdn.net > /dev/null 2>&1) || true
         
         # Set mode to proxy (SOCKS5) and force port 1080
-        warp-cli --accept-tos mode proxy
-        warp-cli --accept-tos proxy set-port 1080
+        warp-cli --accept-tos set-mode proxy
+        warp-cli --accept-tos set-proxy-port 1080
         
         warp-cli --accept-tos connect
         
