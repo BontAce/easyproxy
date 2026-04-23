@@ -41,7 +41,9 @@ class DLStreamsExtractor:
         self._last_working_player: dict[str, str] = {}
         self._playwright = None
         self._browser = None
+        self._context = None
         self._browser_launch_lock = asyncio.Lock()
+        self._last_activity = time.time()
         self._captured_cookies: list[dict] = []
         # Proactive refresh tracking
         self._last_session_refresh: dict[str, float] = {}
@@ -49,6 +51,25 @@ class DLStreamsExtractor:
         self._dynamic_refresh_interval: dict[str, float] = {}
         # Manifest micro-cache to handle rapid requests
         self._manifest_cache: dict[str, tuple[str, float]] = {}
+        self._watchdog_task = asyncio.create_task(self._browser_watchdog())
+
+    async def _browser_watchdog(self):
+        while True:
+            await asyncio.sleep(10)
+            if self._browser and self._context:
+                if time.time() - self._last_activity > 30: # 30 secondi di inattività
+                    try:
+                        logger.info("💤 Nessuna attività video per 30 secondi. Spegnimento browser in background...")
+                        await self._context.close()
+                        await self._browser.close()
+                        if self._playwright:
+                            await self._playwright.stop()
+                    except Exception as e:
+                        logger.debug("DLStreams watchdog chiusura browser errore: %s", e)
+                    finally:
+                        self._context = None
+                        self._browser = None
+                        self._playwright = None
 
     def _get_browser_lock(self, channel_key: str) -> asyncio.Lock:
         lock = self._browser_channel_locks.get(channel_key)
@@ -89,6 +110,9 @@ class DLStreamsExtractor:
         return f"{parsed.scheme}://{parsed.netloc}"
 
     async def _launch_browser(self):
+        if self._browser and self._context:
+            return self._playwright, self._browser, self._context
+
         import os, sys
         chrome_path = os.getenv("CHROME_BIN") or os.getenv("CHROME_EXE_PATH")
         
@@ -100,8 +124,8 @@ class DLStreamsExtractor:
         else:
             executable_path = None
 
-        playwright = await async_playwright().start()
-        browser = await playwright.chromium.launch(
+        self._playwright = await async_playwright().start()
+        self._browser = await self._playwright.chromium.launch(
             headless=is_headless,
             executable_path=executable_path,
             args=[
@@ -114,7 +138,34 @@ class DLStreamsExtractor:
                 "--disable-features=IsolateOrigins,site-per-process",
             ],
         )
-        return playwright, browser
+        
+        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+        self._context = await self._browser.new_context(
+            user_agent=user_agent,
+            viewport={"width": 1366, "height": 768},
+            device_scale_factor=1,
+        )
+        try:
+            await self._context.route(
+                "**/*",
+                lambda route, request: (
+                    route.abort()
+                    if request.resource_type in {"image", "font", "media"}
+                    else route.continue_()
+                ),
+            )
+        except Exception:
+            pass
+
+        # Create a dummy page to keep the browser window open and visible
+        # so it doesn't close and steal focus repeatedly when tabs are closed.
+        try:
+            dummy_page = await self._context.new_page()
+            await dummy_page.goto("about:blank")
+        except Exception:
+            pass
+
+        return self._playwright, self._browser, self._context
 
     def _get_header(self, name: str, default: str | None = None) -> str | None:
         for key, value in self.request_headers.items():
@@ -135,7 +186,7 @@ class DLStreamsExtractor:
 
     @staticmethod
     def _extract_channel_id(url: str) -> str:
-        match_id = re.search(r"id=(\d+)", url)
+        match_id = re.search(r"(?:id=|premium)(\d+)", url)
         channel_id = match_id.group(1) if match_id else str(url)
         if not channel_id.isdigit():
             channel_id = channel_id.replace("premium", "")
@@ -174,6 +225,7 @@ class DLStreamsExtractor:
             logger.debug("DLStreams warm-up failed for %s: %s", player_url, exc)
 
     async def fetch_key_via_browser(self, key_url: str, original_url: str) -> bytes | None:
+        self._last_activity = time.time()
         cached = self._browser_key_cache.get(key_url)
         if cached:
             return cached
@@ -193,24 +245,17 @@ class DLStreamsExtractor:
 
         logger.debug("DLStreams browser key fetch starting for %s", key_url)
         try:
-            playwright, browser = await self._launch_browser()
-            context = await browser.new_context(
-                user_agent=self.base_headers["User-Agent"],
-                viewport={"width": 1366, "height": 768},
-            )
-            try:
-                await context.route(
-                    "**/*",
-                    lambda route, request: (
-                        route.abort()
-                        if request.resource_type in {"image", "font", "media"}
-                        else route.continue_()
-                    ),
-                )
-            except Exception:
-                pass
+            playwright, browser, context = await self._launch_browser()
             try:
                 page = await context.new_page()
+
+                async def handle_popup(popup):
+                    try:
+                        await popup.close()
+                    except Exception:
+                        pass
+                page.on("popup", handle_popup)
+
                 key_bytes: bytes | None = None
 
                 async def on_response(response):
@@ -235,9 +280,7 @@ class DLStreamsExtractor:
                     return key_bytes
                 self._clear_channel_cache(channel_id)
             finally:
-                await context.close()
-                await browser.close()
-                await playwright.stop()
+                await page.close()
         except PlaywrightTimeoutError as exc:
             logger.warning("DLStreams browser key fetch timed out for %s: %s", key_url, exc)
         except Exception as exc:
@@ -294,28 +337,18 @@ class DLStreamsExtractor:
             resolved_player_url = player_url or self._build_player_urls(channel_id)[0]
             logger.debug("DLStreams browser session capture starting for %s", channel_key)
             try:
-                playwright, browser = await self._launch_browser()
-                # Define a real-looking User-Agent to avoid 'Headless' detection
-                user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
-                
-                context = await browser.new_context(
-                    user_agent=user_agent,
-                    viewport={"width": 1366, "height": 768},
-                    device_scale_factor=1,
-                )
-                try:
-                    await context.route(
-                        "**/*",
-                        lambda route, request: (
-                            route.abort()
-                            if request.resource_type in {"image", "font", "media"}
-                            else route.continue_()
-                        ),
-                    )
-                except Exception:
-                    pass
+                playwright, browser, context = await self._launch_browser()
                 try:
                     page = await context.new_page()
+
+                    async def handle_popup_capture(popup):
+                        try:
+                            await popup.close()
+                            logger.debug("🛡️ Bloccato popup pubblicitario di DLStreams!")
+                        except Exception:
+                            pass
+                    page.on("popup", handle_popup_capture)
+
                     manifest_text: str | None = None
 
                     async def on_response(response):
@@ -400,9 +433,7 @@ class DLStreamsExtractor:
                     self._last_session_refresh[channel_key] = time.time()
                     return manifest_text
                 finally:
-                    await context.close()
-                    await browser.close()
-                    await playwright.stop()
+                    await page.close()
             except Exception as exc:
                 self._mark_browser_failure(channel_key)
                 logger.warning("DLStreams browser session capture failed for %s: %s", channel_key, exc)
@@ -426,6 +457,7 @@ class DLStreamsExtractor:
 
     async def extract(self, url: str, **kwargs) -> Dict[str, Any]:
         """Extracts the M3U8 URL and headers bypassing the public watch page."""
+        self._last_activity = time.time()
         try:
             # Extract ID from URL or use as is if numeric
             channel_id = self._extract_channel_id(url)
