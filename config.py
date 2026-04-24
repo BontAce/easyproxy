@@ -139,7 +139,9 @@ def get_proxy_for_url(url: str, transport_routes: list, global_proxies: list, by
             url_pattern = route["url"]
             if url_pattern in url:
                 proxy_value = route.get("proxy")
-                return proxy_value if proxy_value else None
+                if not proxy_value:
+                    return None
+                return proxy_value if is_proxy_alive(proxy_value) else None
 
     # Check if WARP should be used
     is_excluded = any(domain in normalized_url for domain in WARP_EXCLUDE_DOMAINS)

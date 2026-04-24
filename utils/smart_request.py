@@ -2,6 +2,7 @@ import aiohttp
 import logging
 import asyncio
 from typing import Optional, Dict, Any
+from urllib.parse import urlparse
 from config import FLARESOLVERR_URL, FLARESOLVERR_TIMEOUT, get_proxy_for_url, TRANSPORT_ROUTES, GLOBAL_PROXIES, get_connector_for_proxy, get_solver_proxy_url
 from aiohttp_socks import ProxyConnector
 import yarl
@@ -100,17 +101,35 @@ async def smart_request(cmd: str, url: str, headers: Optional[Dict] = None, post
     # ✅ FIX: Estrai i cookie dagli header per passarli a FlareSolverr
     fs_cookies = []
     cookie_header = headers.get("Cookie") or headers.get("cookie")
+    parsed_target = urlparse(url)
+    cookie_domain = parsed_target.hostname or ""
+    cookie_secure = parsed_target.scheme == "https"
     if cookie_header:
         for cookie_item in cookie_header.split(";"):
             if "=" in cookie_item:
                 k, v = cookie_item.strip().split("=", 1)
-                fs_cookies.append({"name": k, "value": v})
+                fs_cookies.append(
+                    {
+                        "name": k,
+                        "value": v,
+                        "domain": cookie_domain,
+                        "path": "/",
+                        "secure": cookie_secure,
+                    }
+                )
 
     payload = {
         "cmd": cmd,
         "url": url,
         "maxTimeout": (FLARESOLVERR_TIMEOUT + 60) * 1000,
     }
+    fs_request_headers = {
+        key: value
+        for key, value in headers.items()
+        if key.lower() != "cookie"
+    }
+    if fs_request_headers:
+        payload["headers"] = fs_request_headers
     if fs_cookies: payload["cookies"] = fs_cookies
     if post_data: payload["postData"] = post_data
     if proxy:
