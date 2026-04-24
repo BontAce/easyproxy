@@ -2578,7 +2578,7 @@ class HLSProxy:
                     f"[Proxy Stream] Using direct session (forced) for: {stream_url}"
                 )
             else:
-                session, session_proxy = await self._get_proxy_session(stream_url)
+                session, session_proxy = await self._get_proxy_session(stream_url, bypass_warp=bypass_warp)
                 
                 # ✅ FIX LOG: Determine correct routing for display
                 if session_proxy:
