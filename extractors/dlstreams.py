@@ -520,20 +520,20 @@ class DLStreamsExtractor:
             # Extract ID from URL or use as is if numeric
             channel_id = self._extract_channel_id(url)
 
-        # Respect bypass_warp or warp from kwargs if provided
-        target_warp = kwargs.get("bypass_warp") or kwargs.get("warp")
-        if target_warp is not None:
-            if isinstance(target_warp, str):
-                if target_warp.lower() == "off":
-                    self.bypass_warp_active = True
-                elif target_warp.lower() in ("on", "true", "1"):
-                    self.bypass_warp_active = False
-            else:
-                self.bypass_warp_active = bool(target_warp)
-            logger.debug(f"DLStreams: bypass_warp_active updated from kwargs to {self.bypass_warp_active}")
+            # Respect bypass_warp or warp from kwargs if provided
+            target_warp = kwargs.get("bypass_warp") or kwargs.get("warp")
+            if target_warp is not None:
+                if isinstance(target_warp, str):
+                    if target_warp.lower() == "off":
+                        self.bypass_warp_active = True
+                    elif target_warp.lower() in ("on", "true", "1"):
+                        self.bypass_warp_active = False
+                else:
+                    self.bypass_warp_active = bool(target_warp)
+                logger.debug(f"DLStreams: bypass_warp_active updated from kwargs to {self.bypass_warp_active}")
 
-        channel_key = f"premium{channel_id}"
-        session = await self._get_session()
+            channel_key = f"premium{channel_id}"
+            session = await self._get_session()
             
             # Use cached session info if available to find server and origin
             iframe_origin = self.entry_origin.rstrip("/")
